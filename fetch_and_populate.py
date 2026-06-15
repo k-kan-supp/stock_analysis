@@ -420,36 +420,68 @@ def fetch_and_store_technicals(code: str, days: int = 365) -> None:
     hist.ta.atr(length=14, append=True)
     hist.ta.obv(append=True)
 
+    # ── 3σ バンド計算 (ウォームアップ込みの全期間で計算してから tail) ──
+    # μ = SMA(n), σ = rolling std(n), バンド = μ ± 3σ
+    hist["STD_49"] = hist["Close"].rolling(window=49).std()
+    hist["STD_98"] = hist["Close"].rolling(window=98).std()
+    hist["S3U_49"] = hist["SMA_49"] + 3 * hist["STD_49"]
+    hist["S3L_49"] = hist["SMA_49"] - 3 * hist["STD_49"]
+    hist["S3U_98"] = hist["SMA_98"] + 3 * hist["STD_98"]
+    hist["S3L_98"] = hist["SMA_98"] - 3 * hist["STD_98"]
+    # 外れ値フラグ: 終値がバンド外ならTrue
+    hist["OUT_49"] = (hist["Close"] > hist["S3U_49"]) | (hist["Close"] < hist["S3L_49"])
+    hist["OUT_98"] = (hist["Close"] > hist["S3U_98"]) | (hist["Close"] < hist["S3L_98"])
+
     hist = hist.tail(days)
 
     rows = []
     for dt, row in hist.iterrows():
         vwap = safe_float((row["High"] + row["Low"] + row["Close"]) / 3, digits=2)
+
+        # NaN の bool 変換を安全に行う
+        def safe_bool(val) -> bool | None:
+            try:
+                import math
+                if math.isnan(float(val)):
+                    return None
+                return bool(val)
+            except (TypeError, ValueError):
+                return None
+
         rows.append({
-            "stock_code":   code,
-            "trade_date":   dt.date(),
-            "ma5":          safe_float(row.get("SMA_5"),          digits=2),
-            "ma7":          safe_float(row.get("SMA_7"),          digits=2),
-            "ma25":         safe_float(row.get("SMA_25"),         digits=2),
-            "ma49":         safe_float(row.get("SMA_49"),         digits=2),
-            "ma75":         safe_float(row.get("SMA_75"),         digits=2),
-            "ma98":         safe_float(row.get("SMA_98"),         digits=2),
-            "ma200":        safe_float(row.get("SMA_200"),        digits=2),
-            "ema12":        safe_float(row.get("EMA_12"),         digits=2),
-            "ema26":        safe_float(row.get("EMA_26"),         digits=2),
-            "macd":         safe_float(row.get("MACD_12_26_9"),   digits=4),
-            "macd_signal":  safe_float(row.get("MACDs_12_26_9"),  digits=4),
-            "macd_hist":    safe_float(row.get("MACDh_12_26_9"),  digits=4),
-            "rsi_14":       safe_float(row.get("RSI_14"),         digits=2),
-            "bb_upper":     safe_float(row.get("BBU_20_2.0"),     digits=2),
-            "bb_mid":       safe_float(row.get("BBM_20_2.0"),     digits=2),
-            "bb_lower":     safe_float(row.get("BBL_20_2.0"),     digits=2),
-            "bb_width":     safe_float(row.get("BBB_20_2.0"),     digits=4),
-            "stoch_k":      safe_float(row.get("STOCHk_14_3_3"),  digits=2),
-            "stoch_d":      safe_float(row.get("STOCHd_14_3_3"),  digits=2),
-            "atr_14":       safe_float(row.get("ATRr_14"),        digits=2),
-            "obv":          safe_int(row.get("OBV")),
-            "vwap":         vwap,
+            "stock_code":       code,
+            "trade_date":       dt.date(),
+            "ma5":              safe_float(row.get("SMA_5"),          digits=2),
+            "ma7":              safe_float(row.get("SMA_7"),          digits=2),
+            "ma25":             safe_float(row.get("SMA_25"),         digits=2),
+            "ma49":             safe_float(row.get("SMA_49"),         digits=2),
+            "ma75":             safe_float(row.get("SMA_75"),         digits=2),
+            "ma98":             safe_float(row.get("SMA_98"),         digits=2),
+            "ma200":            safe_float(row.get("SMA_200"),        digits=2),
+            "ema12":            safe_float(row.get("EMA_12"),         digits=2),
+            "ema26":            safe_float(row.get("EMA_26"),         digits=2),
+            "macd":             safe_float(row.get("MACD_12_26_9"),   digits=4),
+            "macd_signal":      safe_float(row.get("MACDs_12_26_9"),  digits=4),
+            "macd_hist":        safe_float(row.get("MACDh_12_26_9"),  digits=4),
+            "rsi_14":           safe_float(row.get("RSI_14"),         digits=2),
+            "bb_upper":         safe_float(row.get("BBU_20_2.0"),     digits=2),
+            "bb_mid":           safe_float(row.get("BBM_20_2.0"),     digits=2),
+            "bb_lower":         safe_float(row.get("BBL_20_2.0"),     digits=2),
+            "bb_width":         safe_float(row.get("BBB_20_2.0"),     digits=4),
+            "stoch_k":          safe_float(row.get("STOCHk_14_3_3"),  digits=2),
+            "stoch_d":          safe_float(row.get("STOCHd_14_3_3"),  digits=2),
+            "atr_14":           safe_float(row.get("ATRr_14"),        digits=2),
+            "obv":              safe_int(row.get("OBV")),
+            "vwap":             vwap,
+            # 3σ バンド
+            "std_49":           safe_float(row.get("STD_49"),         digits=4),
+            "sigma3_upper_49":  safe_float(row.get("S3U_49"),         digits=2),
+            "sigma3_lower_49":  safe_float(row.get("S3L_49"),         digits=2),
+            "is_outlier_49":    safe_bool(row.get("OUT_49")),
+            "std_98":           safe_float(row.get("STD_98"),         digits=4),
+            "sigma3_upper_98":  safe_float(row.get("S3U_98"),         digits=2),
+            "sigma3_lower_98":  safe_float(row.get("S3L_98"),         digits=2),
+            "is_outlier_98":    safe_bool(row.get("OUT_98")),
         })
 
     if not rows:
@@ -461,13 +493,17 @@ def fetch_and_store_technicals(code: str, days: int = 365) -> None:
              ma5, ma7, ma25, ma49, ma75, ma98, ma200, ema12, ema26,
              macd, macd_signal, macd_hist, rsi_14,
              bb_upper, bb_mid, bb_lower, bb_width,
-             stoch_k, stoch_d, atr_14, obv, vwap)
+             stoch_k, stoch_d, atr_14, obv, vwap,
+             std_49, sigma3_upper_49, sigma3_lower_49, is_outlier_49,
+             std_98, sigma3_upper_98, sigma3_lower_98, is_outlier_98)
         VALUES
             (:stock_code, :trade_date,
              :ma5, :ma7, :ma25, :ma49, :ma75, :ma98, :ma200, :ema12, :ema26,
              :macd, :macd_signal, :macd_hist, :rsi_14,
              :bb_upper, :bb_mid, :bb_lower, :bb_width,
-             :stoch_k, :stoch_d, :atr_14, :obv, :vwap)
+             :stoch_k, :stoch_d, :atr_14, :obv, :vwap,
+             :std_49, :sigma3_upper_49, :sigma3_lower_49, :is_outlier_49,
+             :std_98, :sigma3_upper_98, :sigma3_lower_98, :is_outlier_98)
         ON CONFLICT (stock_code, trade_date) DO UPDATE SET
             ma5=EXCLUDED.ma5, ma7=EXCLUDED.ma7,
             ma25=EXCLUDED.ma25, ma49=EXCLUDED.ma49,
@@ -478,7 +514,15 @@ def fetch_and_store_technicals(code: str, days: int = 365) -> None:
             bb_upper=EXCLUDED.bb_upper, bb_mid=EXCLUDED.bb_mid,
             bb_lower=EXCLUDED.bb_lower, bb_width=EXCLUDED.bb_width,
             stoch_k=EXCLUDED.stoch_k, stoch_d=EXCLUDED.stoch_d,
-            atr_14=EXCLUDED.atr_14, obv=EXCLUDED.obv, vwap=EXCLUDED.vwap
+            atr_14=EXCLUDED.atr_14, obv=EXCLUDED.obv, vwap=EXCLUDED.vwap,
+            std_49=EXCLUDED.std_49,
+            sigma3_upper_49=EXCLUDED.sigma3_upper_49,
+            sigma3_lower_49=EXCLUDED.sigma3_lower_49,
+            is_outlier_49=EXCLUDED.is_outlier_49,
+            std_98=EXCLUDED.std_98,
+            sigma3_upper_98=EXCLUDED.sigma3_upper_98,
+            sigma3_lower_98=EXCLUDED.sigma3_lower_98,
+            is_outlier_98=EXCLUDED.is_outlier_98
     """)
     with engine.begin() as conn:
         conn.execute(sql, rows)

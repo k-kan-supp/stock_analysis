@@ -75,6 +75,16 @@ export interface TechnicalDaily {
   ma75: number | null
   ma98: number | null
   ma200: number | null
+  // 3σ バンド (49日)
+  std_49: number | null
+  sigma3_upper_49: number | null
+  sigma3_lower_49: number | null
+  is_outlier_49: boolean | null
+  // 3σ バンド (98日)
+  std_98: number | null
+  sigma3_upper_98: number | null
+  sigma3_lower_98: number | null
+  is_outlier_98: boolean | null
 }
 
 export interface ScreeningParams {

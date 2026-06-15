@@ -93,6 +93,16 @@ class TechnicalDaily(BaseModel):
     ma75: Optional[Decimal]
     ma98: Optional[Decimal]
     ma200: Optional[Decimal]
+    # 3σ バンド (49日)
+    std_49: Optional[Decimal]
+    sigma3_upper_49: Optional[Decimal]
+    sigma3_lower_49: Optional[Decimal]
+    is_outlier_49: Optional[bool]
+    # 3σ バンド (98日)
+    std_98: Optional[Decimal]
+    sigma3_upper_98: Optional[Decimal]
+    sigma3_lower_98: Optional[Decimal]
+    is_outlier_98: Optional[bool]
 
     model_config = {"from_attributes": True}
 

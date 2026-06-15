@@ -2,9 +2,9 @@ import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useParams, useNavigate } from 'react-router-dom'
 import {
-  Card, Row, Col, Spin, Button, Tag, Statistic, Space, Typography, Segmented,
+  Card, Row, Col, Spin, Button, Tag, Statistic, Space, Typography, Segmented, Alert,
 } from 'antd'
-import { ArrowLeftOutlined, ArrowUpOutlined, ArrowDownOutlined } from '@ant-design/icons'
+import { ArrowLeftOutlined, ArrowUpOutlined, ArrowDownOutlined, WarningOutlined } from '@ant-design/icons'
 import {
   createChart, type IChartApi, type SeriesMarker, type Time,
 } from 'lightweight-charts'
@@ -25,6 +25,12 @@ const MA_COLORS = {
   ma7:  '#FF6B35',
   ma49: '#9B59B6',
   ma98: '#27AE60',
+}
+
+// 3σ バンドの色 (MA と対応させる)
+const SIGMA_COLORS = {
+  band49: '#9B59B6',  // MA49 と同系色
+  band98: '#27AE60',  // MA98 と同系色
 }
 
 interface CrossEvent {
@@ -101,7 +107,7 @@ export default function Technical() {
     }
 
     // ── キャンドルチャート ────────────────────────────────
-    const candleChart = createChart(candleRef.current, { ...chartOpts, height: 400 })
+    const candleChart = createChart(candleRef.current, { ...chartOpts, height: 420 })
 
     const candleSeries = candleChart.addCandlestickSeries({
       upColor: '#e74c3c', downColor: '#3498db',
@@ -116,8 +122,8 @@ export default function Technical() {
     )
 
     // MA ライン描画ヘルパー
-    const addMA = (key: keyof TechnicalDaily, color: string, width: 1 | 2 = 1) => {
-      const series = candleChart.addLineSeries({ color, lineWidth: width })
+    const addLine = (key: keyof TechnicalDaily, color: string, width: 1 | 2 = 1, style = 0) => {
+      const series = candleChart.addLineSeries({ color, lineWidth: width, lineStyle: style })
       series.setData(
         technicals
           .filter(t => t[key] != null)
@@ -126,23 +132,59 @@ export default function Technical() {
       return series
     }
 
-    addMA('ma7',  MA_COLORS.ma7,  2)
-    addMA('ma49', MA_COLORS.ma49, 2)
-    addMA('ma98', MA_COLORS.ma98, 2)
+    // MA 線
+    addLine('ma7',  MA_COLORS.ma7,  2)
+    addLine('ma49', MA_COLORS.ma49, 2)
+    addLine('ma98', MA_COLORS.ma98, 2)
 
-    // ── ゴールデン/デッドクロス マーカー ─────────────────
+    // 3σ バンド (破線スタイル: lineStyle=1 は破線)
+    addLine('sigma3_upper_49', SIGMA_COLORS.band49, 1, 1)
+    addLine('sigma3_lower_49', SIGMA_COLORS.band49, 1, 1)
+    addLine('sigma3_upper_98', SIGMA_COLORS.band98, 1, 1)
+    addLine('sigma3_lower_98', SIGMA_COLORS.band98, 1, 1)
+
+    // ── マーカー: クロス + 外れ値 ────────────────────────
     const crosses = detectCrosses(technicals)
-    const markers: SeriesMarker<Time>[] = crosses
-      .map(c => ({
-        time: c.trade_date as Time,
-        position: c.type === 'golden' ? ('belowBar' as const) : ('aboveBar' as const),
-        color:    c.type === 'golden' ? '#FFD700' : '#4169E1',
-        shape:    c.type === 'golden' ? ('arrowUp' as const) : ('arrowDown' as const),
-        text:     `${c.type === 'golden' ? 'GC' : 'DC'}(${c.pair})`,
-        size: 1,
-      }))
+
+    // クロスマーカー
+    const crossMarkers: SeriesMarker<Time>[] = crosses.map(c => ({
+      time: c.trade_date as Time,
+      position: c.type === 'golden' ? ('belowBar' as const) : ('aboveBar' as const),
+      color:    c.type === 'golden' ? '#FFD700' : '#4169E1',
+      shape:    c.type === 'golden' ? ('arrowUp' as const) : ('arrowDown' as const),
+      text:     `${c.type === 'golden' ? 'GC' : 'DC'}(${c.pair})`,
+      size: 1,
+    }))
+
+    // 外れ値マーカー (3σ 突破)
+    const outlierMarkers: SeriesMarker<Time>[] = []
+    technicals.forEach(t => {
+      // 同日に両方外れ値になる場合は 98日優先で表示
+      const out49 = t.is_outlier_49 === true
+      const out98 = t.is_outlier_98 === true
+      if (!out49 && !out98) return
+
+      // 上抜け・下抜けを終値 vs 上限で判定
+      const latest = prices.find(p => p.trade_date === t.trade_date)
+      if (!latest) return
+      const isAbove =
+        (out98 && t.sigma3_upper_98 != null && latest.close > t.sigma3_upper_98) ||
+        (out49 && t.sigma3_upper_49 != null && latest.close > t.sigma3_upper_49)
+
+      outlierMarkers.push({
+        time:     t.trade_date as Time,
+        position: isAbove ? ('aboveBar' as const) : ('belowBar' as const),
+        color:    out98 ? '#FF4136' : '#FF851B',
+        shape:    ('square' as const),
+        text:     out98 ? '⚠98σ' : '⚠49σ',
+        size:     1,
+      })
+    })
+
+    // マーカーをまとめて時系列順にセット
+    const allMarkers = [...crossMarkers, ...outlierMarkers]
       .sort((a, b) => ((a.time as string) < (b.time as string) ? -1 : 1))
-    candleSeries.setMarkers(markers)
+    candleSeries.setMarkers(allMarkers)
 
     candleChart.timeScale().fitContent()
     candleChartRef.current = candleChart
@@ -195,6 +237,9 @@ export default function Technical() {
   const crosses = technicals ? detectCrosses(technicals) : []
   const recentCrosses = [...crosses].reverse().slice(0, 5)
 
+  const isOutlier49 = latestTech?.is_outlier_49 === true
+  const isOutlier98 = latestTech?.is_outlier_98 === true
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <Space>
@@ -222,31 +267,118 @@ export default function Technical() {
         </Row>
       </Card>
 
-      {/* MA 現在値カード */}
+      {/* 外れ値アラートバナー */}
+      {(isOutlier49 || isOutlier98) && (
+        <Alert
+          type="warning"
+          showIcon
+          icon={<WarningOutlined />}
+          message={
+            <Space>
+              <Text strong>3σ 外れ値を検出</Text>
+              {isOutlier98 && (
+                <Tag color="red">98日 3σ 突破 (σ={latestTech?.std_98?.toFixed(0)})</Tag>
+              )}
+              {isOutlier49 && !isOutlier98 && (
+                <Tag color="orange">49日 3σ 突破 (σ={latestTech?.std_49?.toFixed(0)})</Tag>
+              )}
+            </Space>
+          }
+          description={
+            isOutlier98
+              ? `98日バンド: ${latestTech?.sigma3_lower_98?.toFixed(0)} 〜 ${latestTech?.sigma3_upper_98?.toFixed(0)}`
+              : `49日バンド: ${latestTech?.sigma3_lower_49?.toFixed(0)} 〜 ${latestTech?.sigma3_upper_49?.toFixed(0)}`
+          }
+        />
+      )}
+
+      {/* 指標カード */}
       {latestTech && (
-        <Row gutter={12}>
-          {(
-            [
-              { key: 'ma7',    label: 'MA(7)',   color: MA_COLORS.ma7  },
-              { key: 'ma49',   label: 'MA(49)',  color: MA_COLORS.ma49 },
-              { key: 'ma98',   label: 'MA(98)',  color: MA_COLORS.ma98 },
-              { key: 'rsi_14', label: 'RSI(14)', color: '#e67e22'      },
-              { key: 'macd',   label: 'MACD',    color: '#2980b9'      },
-            ] as { key: keyof TechnicalDaily; label: string; color: string }[]
-          ).map(({ key, label, color }) => (
-            <Col span={4} key={key}>
-              <Card size="small" style={{ borderTop: `3px solid ${color}` }}>
-                <Statistic
-                  title={<Text style={{ color, fontSize: 12 }}>{label}</Text>}
-                  value={
-                    (latestTech[key] as number | null)
-                      ?.toFixed(key === 'rsi_14' || key === 'macd' ? 2 : 0) ?? '-'
-                  }
-                />
-              </Card>
-            </Col>
-          ))}
-        </Row>
+        <>
+          {/* MA / RSI / MACD */}
+          <Row gutter={12}>
+            {(
+              [
+                { key: 'ma7',    label: 'MA(7)',   color: MA_COLORS.ma7  },
+                { key: 'ma49',   label: 'MA(49)',  color: MA_COLORS.ma49 },
+                { key: 'ma98',   label: 'MA(98)',  color: MA_COLORS.ma98 },
+                { key: 'rsi_14', label: 'RSI(14)', color: '#e67e22'      },
+                { key: 'macd',   label: 'MACD',    color: '#2980b9'      },
+              ] as { key: keyof TechnicalDaily; label: string; color: string }[]
+            ).map(({ key, label, color }) => (
+              <Col span={4} key={key}>
+                <Card size="small" style={{ borderTop: `3px solid ${color}` }}>
+                  <Statistic
+                    title={<Text style={{ color, fontSize: 12 }}>{label}</Text>}
+                    value={
+                      (latestTech[key] as number | null)
+                        ?.toFixed(key === 'rsi_14' || key === 'macd' ? 2 : 0) ?? '-'
+                    }
+                  />
+                </Card>
+              </Col>
+            ))}
+          </Row>
+
+          {/* 3σ バンド */}
+          <Row gutter={12}>
+            {[
+              {
+                label: '49日 +3σ', value: latestTech.sigma3_upper_49?.toFixed(0) ?? '-',
+                color: SIGMA_COLORS.band49, outlier: isOutlier49,
+              },
+              {
+                label: '49日 MA', value: latestTech.ma49?.toFixed(0) ?? '-',
+                color: SIGMA_COLORS.band49, outlier: false,
+              },
+              {
+                label: '49日 -3σ', value: latestTech.sigma3_lower_49?.toFixed(0) ?? '-',
+                color: SIGMA_COLORS.band49, outlier: isOutlier49,
+              },
+              {
+                label: '49日 σ', value: latestTech.std_49?.toFixed(1) ?? '-',
+                color: SIGMA_COLORS.band49, outlier: false,
+              },
+              {
+                label: '98日 +3σ', value: latestTech.sigma3_upper_98?.toFixed(0) ?? '-',
+                color: SIGMA_COLORS.band98, outlier: isOutlier98,
+              },
+              {
+                label: '98日 MA', value: latestTech.ma98?.toFixed(0) ?? '-',
+                color: SIGMA_COLORS.band98, outlier: false,
+              },
+              {
+                label: '98日 -3σ', value: latestTech.sigma3_lower_98?.toFixed(0) ?? '-',
+                color: SIGMA_COLORS.band98, outlier: isOutlier98,
+              },
+              {
+                label: '98日 σ', value: latestTech.std_98?.toFixed(1) ?? '-',
+                color: SIGMA_COLORS.band98, outlier: false,
+              },
+            ].map(item => (
+              <Col span={3} key={item.label}>
+                <Card
+                  size="small"
+                  style={{
+                    borderTop: `3px solid ${item.color}`,
+                    background: item.outlier ? '#fff7e6' : undefined,
+                  }}
+                >
+                  <Statistic
+                    title={
+                      <Space size={4}>
+                        <Text style={{ color: item.color, fontSize: 11 }}>{item.label}</Text>
+                        {item.outlier && <WarningOutlined style={{ color: '#fa8c16' }} />}
+                      </Space>
+                    }
+                    value={item.value}
+                    valueStyle={item.outlier ? { color: '#fa8c16', fontWeight: 700 } : undefined}
+                  />
+                </Card>
+              </Col>
+            ))}
+          </Row>
+        </>
       )}
 
       {/* 直近クロス履歴 */}
@@ -293,12 +425,32 @@ export default function Technical() {
               </span>
             ))}
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+              <span style={{
+                display: 'inline-block', width: 20, height: 2,
+                background: SIGMA_COLORS.band49, borderRadius: 2,
+                borderTop: `2px dashed ${SIGMA_COLORS.band49}`,
+              }} />
+              <Text style={{ fontSize: 12, color: SIGMA_COLORS.band49 }}>49日 ±3σ</Text>
+            </span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+              <span style={{
+                display: 'inline-block', width: 20, height: 2,
+                background: SIGMA_COLORS.band98, borderRadius: 2,
+                borderTop: `2px dashed ${SIGMA_COLORS.band98}`,
+              }} />
+              <Text style={{ fontSize: 12, color: SIGMA_COLORS.band98 }}>98日 ±3σ</Text>
+            </span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
               <ArrowUpOutlined style={{ color: '#FFD700' }} />
-              <Text style={{ fontSize: 12, color: '#B8860B' }}>ゴールデンクロス</Text>
+              <Text style={{ fontSize: 12, color: '#B8860B' }}>GC</Text>
             </span>
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
               <ArrowDownOutlined style={{ color: '#4169E1' }} />
-              <Text style={{ fontSize: 12, color: '#4169E1' }}>デッドクロス</Text>
+              <Text style={{ fontSize: 12, color: '#4169E1' }}>DC</Text>
+            </span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+              <WarningOutlined style={{ color: '#FF4136' }} />
+              <Text style={{ fontSize: 12, color: '#FF4136' }}>3σ 外れ値</Text>
             </span>
           </Space>
 

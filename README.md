@@ -257,10 +257,89 @@ DATABASE_URL=... python fetch_and_populate.py --codes 7203 9984 6758
 
 ---
 
+## Outlook 通知機能
+
+`notify.py` で以下 4 種類のアラートを Outlook (SMTP) 経由でメール送信します。
+
+### アラート種別
+
+| 種別 | 検出条件 | メール件名例 |
+|---|---|---|
+| **ゴールデン/デッドクロス** | MA7×MA49 または MA49×MA98 のクロスを当日検出 | `【株式アラート】クロス検出 2025-06-15 (G:2 D:1)` |
+| **価格アラート** | `alert_configs` テーブルの設定価格を超過/下回り | `【株式アラート】価格アラート 2025-06-15 (3 件)` |
+| **RSI 過熱/売られすぎ** | RSI ≥ 70 または RSI ≤ 30 (閾値は変更可) | `【株式アラート】RSI 2025-06-15 (過熱:2 売られすぎ:1)` |
+| **毎朝サマリーレポート** | ウォッチリスト銘柄の株価・RSI・MA・指標一覧 | `【株式レポート】毎朝サマリー 2025-06-15` |
+
+同日・同銘柄・同アラート種別の重複送信は `alert_history` テーブルで自動防止します。
+
+### セットアップ
+
+```bash
+# 1. アラートテーブル追加
+psql stockdb -f migrations/003_add_alerts_table.sql
+
+# 2. 環境変数設定
+cp .env.example .env
+# .env を編集して SMTP_USER / SMTP_PASSWORD / NOTIFY_TO を設定
+
+# 3. 動作確認 (メール送信なし)
+python notify.py --dry-run
+
+# 4. 本実行
+python notify.py                    # 全アラート一括
+python notify.py --mode cross       # クロスのみ
+python notify.py --mode price       # 価格アラートのみ
+python notify.py --mode rsi         # RSI のみ
+python notify.py --mode report      # 朝次レポートのみ
+```
+
+### 価格アラートの登録方法
+
+`alert_configs` テーブルに直接 INSERT します。
+
+```sql
+-- 7203 (トヨタ) が 3,000 円を超えたら通知
+INSERT INTO alert_configs (stock_code, alert_type, threshold, note)
+VALUES ('7203', 'price_above', 3000, '目標利確ライン');
+
+-- 9984 (ソフトバンクG) が 7,000 円を下回ったら通知
+INSERT INTO alert_configs (stock_code, alert_type, threshold, note)
+VALUES ('9984', 'price_below', 7000, '損切りライン');
+```
+
+### cron での自動実行例
+
+```bash
+# 毎朝 8:00 に全アラートチェック (DB と SMTP の資格情報は .env から読み込み)
+0 8 * * 1-5  cd /path/to/stock_analysis && python notify.py >> logs/notify.log 2>&1
+
+# 毎朝 7:50 にサマリーレポートのみ
+50 7 * * 1-5  cd /path/to/stock_analysis && python notify.py --mode report >> logs/notify.log 2>&1
+```
+
+### 環境変数一覧 (`.env.example` 参照)
+
+| 変数名 | 説明 | デフォルト |
+|---|---|---|
+| `DATABASE_URL` | PostgreSQL 接続文字列 | 必須 |
+| `SMTP_HOST` | SMTP サーバー | `smtp.office365.com` |
+| `SMTP_PORT` | SMTP ポート | `587` |
+| `SMTP_USER` | 送信元 Outlook アドレス | 必須 |
+| `SMTP_PASSWORD` | パスワード or アプリパスワード | 必須 |
+| `NOTIFY_TO` | 送信先 (カンマ区切り複数可) | `SMTP_USER` と同じ |
+| `WATCHLIST_CODES` | 監視銘柄 (カンマ区切り) | 全アクティブ銘柄 |
+| `RSI_HIGH` | 過熱判定閾値 | `70` |
+| `RSI_LOW` | 売られすぎ判定閾値 | `30` |
+
+> **MFA 環境の注意**: Microsoft 365 で多要素認証が有効な場合は、  
+> Azure AD でアプリパスワードを発行するか、OAuth2 認証 (Microsoft Graph API) への切り替えを検討してください。
+
+---
+
 ## 今後の拡張予定
 
 - [ ] ESG スコア・ガバナンスデータ (EDINET API 連携)
 - [ ] JPX CSV による指数構成銘柄フラグ自動更新 (is_topix / is_nikkei225)
 - [ ] アナリスト評価履歴テーブルへの書き込み
 - [ ] ニュース取得 + LLM センチメント分析
-- [ ] ゴールデン/デッドクロス発生時のプッシュ通知アラート
+- [ ] Microsoft Graph API 対応 (MFA 環境での OAuth2 認証)

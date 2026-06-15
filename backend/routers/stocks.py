@@ -150,7 +150,9 @@ async def get_technicals(
     sql = text(
         "SELECT trade_date, rsi_14, macd, macd_signal, macd_hist, "
         "       bb_upper, bb_mid, bb_lower, "
-        "       ma7, ma25, ma49, ma75, ma98, ma200 "
+        "       ma7, ma25, ma49, ma75, ma98, ma200, "
+        "       std_49, sigma3_upper_49, sigma3_lower_49, is_outlier_49, "
+        "       std_98, sigma3_upper_98, sigma3_lower_98, is_outlier_98 "
         "FROM stock_technical_daily "
         "WHERE stock_code = :code "
         "  AND trade_date >= CURRENT_DATE - :days * INTERVAL '1 day' "
