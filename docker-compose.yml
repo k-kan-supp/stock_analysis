@@ -1,0 +1,47 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: stockdb
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: pass
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./schema.sql:/docker-entrypoint-initdb.d/01_schema.sql
+      - ./seed_industry_master.sql:/docker-entrypoint-initdb.d/02_seed_industry.sql
+      - ./seed_stocks_sample.sql:/docker-entrypoint-initdb.d/03_seed_stocks.sql
+      - ./migrations/001_add_ma7_49_98.sql:/docker-entrypoint-initdb.d/04_migration.sql
+      - ./migrations/002_add_growth_analyst_cashflow.sql:/docker-entrypoint-initdb.d/05_migration.sql
+      - ./migrations/003_add_alerts_table.sql:/docker-entrypoint-initdb.d/06_migration.sql
+      - ./migrations/004_add_sigma3_bands.sql:/docker-entrypoint-initdb.d/07_migration.sql
+      - ./migrations/005_add_spc_columns.sql:/docker-entrypoint-initdb.d/08_migration.sql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d stockdb"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    env_file: .env
+    environment:
+      ASYNC_DATABASE_URL: postgresql+asyncpg://user:pass@db:5432/stockdb
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:

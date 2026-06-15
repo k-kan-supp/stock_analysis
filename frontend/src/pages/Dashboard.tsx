@@ -5,11 +5,11 @@ import { useNavigate } from 'react-router-dom'
 import { dashboardApi } from '../api/client'
 import type { IndustrySummary } from '../types/stock'
 
-const fmtCap = (v: number | null) =>
-  v == null ? '-' : `${(v / 1e12).toFixed(2)}兆円`
+const fmtCap = (v: number | string | null) =>
+  v == null ? '-' : `${(Number(v) / 1e12).toFixed(2)}兆円`
 
-const fmtPct = (v: number | null) =>
-  v == null ? '-' : `${(v * 100).toFixed(2)}%`
+const fmtPct = (v: number | string | null) =>
+  v == null ? '-' : `${(Number(v) * 100).toFixed(2)}%`
 
 const stockColumns = (navigate: ReturnType<typeof useNavigate>) => [
   {
@@ -21,7 +21,7 @@ const stockColumns = (navigate: ReturnType<typeof useNavigate>) => [
   },
   { title: '銘柄名', dataIndex: 'company_name_ja', ellipsis: true },
   { title: '時価総額', dataIndex: 'market_cap_jpy', render: fmtCap },
-  { title: 'PBR', dataIndex: 'pbr', render: (v: number | null) => v?.toFixed(2) ?? '-' },
+  { title: 'PBR', dataIndex: 'pbr', render: (v: number | string | null) => v == null ? '-' : Number(v).toFixed(2) },
   { title: '配当利回り', dataIndex: 'dividend_yield', render: fmtPct },
 ]
 

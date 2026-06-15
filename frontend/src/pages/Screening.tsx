@@ -25,10 +25,13 @@ const SORT_OPTIONS = [
   { value: 'rsi_14', label: 'RSI' },
 ]
 
-const fmtCap = (v: number | null) =>
-  v == null ? '-' : v >= 1e12 ? `${(v / 1e12).toFixed(1)}兆` : `${(v / 1e8).toFixed(0)}億`
+const fmtCap = (v: number | string | null) => {
+  if (v == null) return '-'
+  const n = Number(v)
+  return n >= 1e12 ? `${(n / 1e12).toFixed(1)}兆` : `${(n / 1e8).toFixed(0)}億`
+}
 
-const fmtPct = (v: number | null) => (v == null ? '-' : `${(v * 100).toFixed(2)}%`)
+const fmtPct = (v: number | string | null) => (v == null ? '-' : `${(Number(v) * 100).toFixed(2)}%`)
 
 export default function Screening() {
   const [form] = Form.useForm()
@@ -75,18 +78,19 @@ export default function Screening() {
       width: 90,
       render: (v: number | null) => v?.toLocaleString('ja-JP', { style: 'currency', currency: 'JPY' }) ?? '-',
     },
-    { title: 'PER', dataIndex: 'per_ttm', render: (v: number | null) => v?.toFixed(1) ?? '-', width: 70 },
-    { title: 'PBR', dataIndex: 'pbr', render: (v: number | null) => v?.toFixed(2) ?? '-', width: 70 },
+    { title: 'PER', dataIndex: 'per_ttm', render: (v: number | string | null) => v == null ? '-' : Number(v).toFixed(1), width: 70 },
+    { title: 'PBR', dataIndex: 'pbr', render: (v: number | string | null) => v == null ? '-' : Number(v).toFixed(2), width: 70 },
     { title: '配当利回り', dataIndex: 'dividend_yield', render: fmtPct, width: 100 },
     { title: 'ROE', dataIndex: 'roe', render: fmtPct, width: 80 },
     {
       title: 'RSI(14)',
       dataIndex: 'rsi_14',
       width: 80,
-      render: (v: number | null) => {
+      render: (v: number | string | null) => {
         if (v == null) return '-'
-        const color = v >= 70 ? 'red' : v <= 30 ? 'blue' : 'default'
-        return <Tag color={color}>{v.toFixed(1)}</Tag>
+        const n = Number(v)
+        const color = n >= 70 ? 'red' : n <= 30 ? 'blue' : 'default'
+        return <Tag color={color}>{n.toFixed(1)}</Tag>
       },
     },
     {

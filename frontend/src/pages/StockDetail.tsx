@@ -9,10 +9,13 @@ import { stocksApi } from '../api/client'
 
 const { Title, Link } = Typography
 
-const fmtPct = (v: number | null) => (v == null ? '-' : `${(v * 100).toFixed(2)}%`)
-const fmtB = (v: number | null) =>
-  v == null ? '-' : v >= 1e12 ? `${(v / 1e12).toFixed(2)}兆円` : `${(v / 1e8).toFixed(1)}億円`
-const fmt = (v: number | null, digits = 2) => (v == null ? '-' : v.toFixed(digits))
+const fmtPct = (v: number | string | null) => (v == null ? '-' : `${(Number(v) * 100).toFixed(2)}%`)
+const fmtB = (v: number | string | null) => {
+  if (v == null) return '-'
+  const n = Number(v)
+  return n >= 1e12 ? `${(n / 1e12).toFixed(2)}兆円` : `${(n / 1e8).toFixed(1)}億円`
+}
+const fmt = (v: number | string | null, digits = 2) => (v == null ? '-' : Number(v).toFixed(digits))
 
 export default function StockDetail() {
   const { code } = useParams<{ code: string }>()
