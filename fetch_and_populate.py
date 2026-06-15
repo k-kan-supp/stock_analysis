@@ -2,12 +2,19 @@
 株価属性・OHLCV・テクニカル指標 取得・DBインサート スクリプト
 yfinance + pandas-ta を使って各テーブルを一括更新する
 
-依存: pip install yfinance pandas-ta psycopg2-binary sqlalchemy
-環境変数:
-  DATABASE_URL  postgresql://user:pass@localhost:5432/stockdb
+依存: pip install yfinance pandas-ta psycopg2-binary sqlalchemy python-dotenv
+環境変数 (.env または シェル変数):
+  DATABASE_URL            postgresql://user:pass@localhost:5432/stockdb
+  DEFAULT_FETCH_CODES     7203,9984,6758,...  (省略時は内部デフォルト10銘柄)
+  FETCH_REQUEST_INTERVAL  1.5                 (Yahoo Finance レート制限対策, 省略可)
+  FETCH_HISTORY_PERIOD    1y                  (属性・TOPIX 取得期間, 省略可)
+  FETCH_AVG_VOLUME_WINDOW 20                  (平均出来高の計算窓, 省略可)
+  FETCH_WARMUP_BUFFER_DAYS 250               (MA200 等のウォームアップ日数, 省略可)
+  SPC_THRESHOLD           7                   (SPC Run Rule 連続日数閾値, 省略可)
+  SPC_TARGET_RATIO        1.005               (SPC Target = 前日終値×比率, 省略可)
 実行例:
-  DATABASE_URL=postgresql://... python fetch_and_populate.py
-  DATABASE_URL=postgresql://... python fetch_and_populate.py --codes 7203 9984
+  python fetch_and_populate.py
+  python fetch_and_populate.py --codes 7203 9984
 """
 
 import math
@@ -21,21 +28,31 @@ from typing import Optional
 import pandas as pd
 import yfinance as yf
 import pandas_ta as ta  # noqa: F401  (DataFrame.ta 拡張のため import が必要)
+from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
+
+load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
-DB_URL = os.getenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/stockdb")
+# ── 環境変数 ──────────────────────────────────────────────────
+DB_URL = os.environ["DATABASE_URL"]
 engine = create_engine(DB_URL, pool_pre_ping=True)
 
-DEFAULT_CODES = [
-    "7203", "9984", "6758", "8306", "4502",
-    "6861", "9433", "8035", "6098", "4063",
-]
+_default_codes_env = os.getenv("DEFAULT_FETCH_CODES", "")
+DEFAULT_CODES: list[str] = (
+    [c.strip() for c in _default_codes_env.split(",") if c.strip()]
+    if _default_codes_env
+    else ["7203", "9984", "6758", "8306", "4502", "6861", "9433", "8035", "6098", "4063"]
+)
 
-REQUEST_INTERVAL = 1.5   # Yahoo Finance レート制限対策
-SPC_THRESHOLD    = 7     # SPC Run Rule: 何日以上連続でフラグ立て
+REQUEST_INTERVAL     = float(os.getenv("FETCH_REQUEST_INTERVAL",   "1.5"))
+FETCH_HISTORY_PERIOD = os.getenv("FETCH_HISTORY_PERIOD",           "1y")
+AVG_VOLUME_WINDOW    = int(os.getenv("FETCH_AVG_VOLUME_WINDOW",    "20"))
+WARMUP_BUFFER_DAYS   = int(os.getenv("FETCH_WARMUP_BUFFER_DAYS",   "250"))
+SPC_THRESHOLD        = int(os.getenv("SPC_THRESHOLD",              "7"))
+SPC_TARGET_RATIO     = float(os.getenv("SPC_TARGET_RATIO",         "1.005"))
 
 _topix_returns: Optional[pd.Series] = None  # TOPIX 日次リターンのキャッシュ
 
@@ -117,10 +134,10 @@ def fetch_stock_attributes(code: str) -> dict:  # noqa: C901
     info = t.info or {}
 
     # ── 1年分の日次履歴 (52週指標・MA・RSI・ATR) ─────────────
-    hist = _flatten_columns(t.history(period="1y"))
+    hist = _flatten_columns(t.history(period=FETCH_HISTORY_PERIOD))
     price_52w_high = safe_float(hist["High"].max(), digits=2) if not hist.empty else None
     price_52w_low  = safe_float(hist["Low"].min(),  digits=2) if not hist.empty else None
-    avg_vol_20d    = safe_int(hist["Volume"].tail(20).mean())  if len(hist) >= 20 else None
+    avg_vol_20d    = safe_int(hist["Volume"].tail(AVG_VOLUME_WINDOW).mean()) if len(hist) >= AVG_VOLUME_WINDOW else None
 
     rsi_14 = atr_14 = ma7 = ma25 = ma49 = ma75 = ma98 = ma200 = None
     price_latest = vol_ratio = None
@@ -155,8 +172,8 @@ def fetch_stock_attributes(code: str) -> dict:  # noqa: C901
     beta = None
     try:
         if _topix_returns is None:
-            time.sleep(0.3)
-            topix_raw      = yf.download("^TOPX", period="1y", progress=False)
+            time.sleep(REQUEST_INTERVAL / 5)
+            topix_raw      = yf.download("^TOPX", period=FETCH_HISTORY_PERIOD, progress=False)
             _topix_returns = _flatten_columns(topix_raw)["Close"].pct_change().dropna()
         stk_ret = hist["Close"].pct_change().dropna()
         aligned = pd.concat([stk_ret, _topix_returns], axis=1).dropna()
@@ -426,7 +443,7 @@ def fetch_and_store_technicals(code: str, days: int = 365) -> None:
     ウォームアップ期間 (200日MA等) のために days+250 日分取得してから末尾 days 日だけ保存する。
     """
     ticker = to_ticker(code)
-    raw  = yf.download(ticker, period=f"{days + 250}d", progress=False)
+    raw  = yf.download(ticker, period=f"{days + WARMUP_BUFFER_DAYS}d", progress=False)
     hist = _flatten_columns(raw)
     if hist.empty or len(hist) < 30:
         log.warning(f"{code}: テクニカル計算に十分なデータなし")
@@ -461,10 +478,10 @@ def fetch_and_store_technicals(code: str, days: int = 365) -> None:
     hist["OUT_98"] = (hist["Close"] > hist["S3U_98"]) | (hist["Close"] < hist["S3L_98"])
 
     # ── SPC 管理 (連続上昇/降下・Target 判定) ────────────────────
-    # Target = 前日終値 × 1.005 (前日比 +0.5%)
+    # Target = 前日終値 × SPC_TARGET_RATIO (デフォルト: 前日比 +0.5%)
     hist["PREV_CLOSE"]    = hist["Close"].shift(1)
     hist["DAILY_RET"]     = (hist["Close"] - hist["PREV_CLOSE"]) / hist["PREV_CLOSE"]
-    hist["SPC_TARGET"]    = hist["PREV_CLOSE"] * 1.005
+    hist["SPC_TARGET"]    = hist["PREV_CLOSE"] * SPC_TARGET_RATIO
     hist["ABOVE_TARGET"]  = hist["Close"] > hist["SPC_TARGET"]
     hist["BELOW_TARGET"]  = (hist["Close"] <= hist["SPC_TARGET"]) & hist["PREV_CLOSE"].notna()
     hist["PRICE_UP"]      = hist["Close"] > hist["PREV_CLOSE"]
