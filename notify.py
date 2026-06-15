@@ -431,6 +431,8 @@ def check_spc_alerts(dry_run: bool = False) -> list[dict]:
 
     triggered: list[dict] = []
     for r in rows:
+        price        = float(r["price_latest"]) if r["price_latest"] else None
+        daily_return = float(r["daily_return"]) if r["daily_return"] else None
         for flag_col, alert_type, label, count_col in _SPC_RULE_CHECKS:
             if not r[flag_col]:
                 continue
@@ -443,8 +445,8 @@ def check_spc_alerts(dry_run: bool = False) -> list[dict]:
                 "label":        label,
                 "alert_type":   alert_type,
                 "days":         r[count_col],
-                "price":        float(r["price_latest"]) if r["price_latest"] else None,
-                "daily_return": float(r["daily_return"]) if r["daily_return"] else None,
+                "price":        price,
+                "daily_return": daily_return,
             })
 
     if not triggered:
@@ -455,16 +457,21 @@ def check_spc_alerts(dry_run: bool = False) -> list[dict]:
         color = _SPC_COLORS.get(label, "#333")
         return f"<span style='color:{color};font-weight:bold'>{label}</span>"
 
+    def _fmt_price(t: dict) -> str:
+        return f"¥{t['price']:,.0f}" if t["price"] is not None else "-"
+
+    def _fmt_ret(t: dict) -> str:
+        return f"{t['daily_return'] * 100:.2f}%" if t["daily_return"] is not None else "-"
+
     rows_html = "".join(
         f"<tr style='background:#{'fff9f0' if t['label'] in ('Target超え','連続上昇') else 'f0f4ff'}'>"
         f"<td>{t['code']}</td><td>{t['name']}</td>"
         f"<td>{_badge(t['label'])}</td>"
         f"<td style='text-align:center'><b>{t['days']}日</b></td>"
-        f"<td style='text-align:right'>¥{t['price']:,.0f}</td>"
-        f"<td style='text-align:right'>{(t['daily_return'] * 100):.2f}%</td>"
+        f"<td style='text-align:right'>{_fmt_price(t)}</td>"
+        f"<td style='text-align:right'>{_fmt_ret(t)}</td>"
         f"<td>{t['date']}</td></tr>"
         for t in triggered
-        if t["price"] is not None and t["daily_return"] is not None
     )
 
     html = _wrap_html(
@@ -491,9 +498,10 @@ def check_spc_alerts(dry_run: bool = False) -> list[dict]:
 
     if not dry_run:
         for t in triggered:
+            price_str = f"¥{t['price']:,.0f}" if t["price"] is not None else "-"
             _record_sent(
                 t["code"], t["alert_type"], t["date"],
-                f"{t['label']} {t['days']}日 ¥{t['price']:,.0f}",
+                f"{t['label']} {t['days']}日 {price_str}",
             )
 
     return triggered

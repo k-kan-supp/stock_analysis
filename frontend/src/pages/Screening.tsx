@@ -2,14 +2,12 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   Card, Form, Row, Col, Select, InputNumber, Button, Table,
-  Tag, Typography, Tooltip, Space,
+  Tag, Space,
 } from 'antd'
 import { FilterOutlined, ReloadOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import { stocksApi } from '../api/client'
 import type { ScreeningParams, StockSummary } from '../types/stock'
-
-const { Title } = Typography
 
 const MARKET_OPTIONS = [
   { value: 'Prime', label: 'Prime' },
@@ -135,14 +133,14 @@ export default function Screening() {
             </Col>
             <Col span={4}>
               <Form.Item name="dividend_yield_min" label="配当利回り下限 (%)">
-                <InputNumber min={0} max={20} step={0.5} style={{ width: '100%' }}
-                  formatter={v => `${v}`} parser={v => Number(v) / 100} />
+                <InputNumber<number> min={0} max={20} step={0.5} style={{ width: '100%' }}
+                  formatter={v => `${v}`} parser={(v): number => Number(v) / 100} />
               </Form.Item>
             </Col>
             <Col span={4}>
               <Form.Item name="roe_min" label="ROE下限 (%)">
-                <InputNumber min={0} max={100} step={1} style={{ width: '100%' }}
-                  formatter={v => `${v}`} parser={v => Number(v) / 100} />
+                <InputNumber<number> min={0} max={100} step={1} style={{ width: '100%' }}
+                  formatter={v => `${v}`} parser={(v): number => Number(v) / 100} />
               </Form.Item>
             </Col>
           </Row>

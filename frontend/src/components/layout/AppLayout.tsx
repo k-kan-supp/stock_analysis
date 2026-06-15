@@ -1,7 +1,6 @@
 import { Layout, Menu, Input, Typography } from 'antd'
 import {
-  DashboardOutlined, FilterOutlined,
-  LineChartOutlined, SearchOutlined,
+  DashboardOutlined, FilterOutlined, SearchOutlined,
 } from '@ant-design/icons'
 import { useNavigate, useLocation, Outlet } from 'react-router-dom'
 

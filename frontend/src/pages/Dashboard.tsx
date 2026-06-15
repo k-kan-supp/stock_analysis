@@ -1,11 +1,9 @@
 import { useQuery } from '@tanstack/react-query'
-import { Row, Col, Card, Statistic, Table, Tag, Spin, Typography } from 'antd'
+import { Row, Col, Card, Statistic, Table, Spin } from 'antd'
 import { Column, Bar } from '@ant-design/plots'
 import { useNavigate } from 'react-router-dom'
 import { dashboardApi } from '../api/client'
-import type { StockSummary, IndustrySummary } from '../types/stock'
-
-const { Title } = Typography
+import type { IndustrySummary } from '../types/stock'
 
 const fmtCap = (v: number | null) =>
   v == null ? '-' : `${(v / 1e12).toFixed(2)}兆円`

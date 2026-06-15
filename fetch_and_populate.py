@@ -10,8 +10,8 @@ yfinance + pandas-ta を使って各テーブルを一括更新する
   DATABASE_URL=postgresql://... python fetch_and_populate.py --codes 7203 9984
 """
 
+import math
 import os
-import sys
 import time
 import logging
 import argparse
@@ -20,7 +20,7 @@ from typing import Optional
 
 import pandas as pd
 import yfinance as yf
-import pandas_ta as ta
+import pandas_ta as ta  # noqa: F401  (DataFrame.ta 拡張のため import が必要)
 from sqlalchemy import create_engine, text
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -34,7 +34,10 @@ DEFAULT_CODES = [
     "6861", "9433", "8035", "6098", "4063",
 ]
 
-REQUEST_INTERVAL = 1.5  # Yahoo Finance レート制限対策
+REQUEST_INTERVAL = 1.5   # Yahoo Finance レート制限対策
+SPC_THRESHOLD    = 7     # SPC Run Rule: 何日以上連続でフラグ立て
+
+_topix_returns: Optional[pd.Series] = None  # TOPIX 日次リターンのキャッシュ
 
 
 def to_ticker(code: str) -> str:
@@ -55,6 +58,16 @@ def safe_int(val, default=None) -> Optional[int]:
         return None if pd.isna(f) else int(f)
     except (TypeError, ValueError):
         return default
+
+
+def safe_bool(val) -> Optional[bool]:
+    """NaN / None を None に変換し、それ以外を bool に変換する。"""
+    try:
+        if math.isnan(float(val)):
+            return None
+        return bool(val)
+    except (TypeError, ValueError):
+        return None
 
 
 def _flatten_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -137,14 +150,16 @@ def fetch_stock_attributes(code: str) -> dict:  # noqa: C901
         )
 
     # ── ベータ計算 (vs TOPIX) ────────────────────────────────
+    # TOPIX データはモジュールレベルでキャッシュし N 銘柄で使い回す
+    global _topix_returns
     beta = None
     try:
-        time.sleep(0.3)
-        topix_raw = yf.download("^TOPX", period="1y", progress=False)
-        topix     = _flatten_columns(topix_raw)["Close"]
-        stk_ret   = hist["Close"].pct_change().dropna()
-        tpx_ret   = topix.pct_change().dropna()
-        aligned   = pd.concat([stk_ret, tpx_ret], axis=1).dropna()
+        if _topix_returns is None:
+            time.sleep(0.3)
+            topix_raw      = yf.download("^TOPX", period="1y", progress=False)
+            _topix_returns = _flatten_columns(topix_raw)["Close"].pct_change().dropna()
+        stk_ret = hist["Close"].pct_change().dropna()
+        aligned = pd.concat([stk_ret, _topix_returns], axis=1).dropna()
         if len(aligned) > 20:
             beta = float(aligned.cov().iloc[0, 1] / aligned.iloc[:, 1].var())
     except Exception as e:
@@ -216,8 +231,8 @@ def fetch_stock_attributes(code: str) -> dict:  # noqa: C901
 
     # ── quoteType から is_reit / is_etf を判定 ───────────────
     quote_type    = info.get("quoteType", "")
-    is_reit       = quote_type in ("REIT",)
-    is_etf        = quote_type in ("ETF",)
+    is_reit       = quote_type == "REIT"
+    is_etf        = quote_type == "ETF"
     is_foreign    = info.get("country", "Japan") not in ("Japan", "JPN")
 
     # ── 組み立て ─────────────────────────────────────────────
@@ -298,7 +313,6 @@ def fetch_stock_attributes(code: str) -> dict:  # noqa: C901
         five_yr_avg_div_yield   = safe_float(info.get("fiveYearAvgDividendYield")),
         trailing_annual_div_yield = safe_float(info.get("trailingAnnualDividendYield")),
         consecutive_div_years   = consec_div,
-        consecutive_div_years_calc = consec_div,
         buyback_yield           = buyback_yield_val,
         total_shareholder_yield = total_sh_yield,
 
@@ -328,7 +342,8 @@ def fetch_stock_attributes(code: str) -> dict:  # noqa: C901
         atr_14                  = atr_14,
 
         # ── I. 株主構成 ──────────────────────────────────────
-        foreign_ownership_ratio = safe_float(info.get("heldPercentInstitutions")),
+        # yfinance では外国人持株比率は取得不可のため None
+        foreign_ownership_ratio = None,
         institutional_ownership = safe_float(info.get("heldPercentInstitutions")),
         insider_ownership       = safe_float(info.get("heldPercentInsiders")),
 
@@ -460,7 +475,6 @@ def fetch_and_store_technicals(code: str, days: int = 365) -> None:
     hist["CONSEC_ABOVE"]   = _consec(hist["ABOVE_TARGET"])
     hist["CONSEC_BELOW"]   = _consec(hist["BELOW_TARGET"])
 
-    SPC_THRESHOLD = 7
     hist["SPC_RUN_UP"]   = hist["CONSEC_RISE"]    >= SPC_THRESHOLD
     hist["SPC_RUN_DOWN"] = hist["CONSEC_DECLINE"] >= SPC_THRESHOLD
     hist["SPC_ABV_TGT"]  = hist["CONSEC_ABOVE"]   >= SPC_THRESHOLD
@@ -475,17 +489,6 @@ def fetch_and_store_technicals(code: str, days: int = 365) -> None:
     rows = []
     for dt, row in hist.iterrows():
         vwap = safe_float((row["High"] + row["Low"] + row["Close"]) / 3, digits=2)
-
-        # NaN の bool 変換を安全に行う
-        def safe_bool(val) -> bool | None:
-            try:
-                import math
-                if math.isnan(float(val)):
-                    return None
-                return bool(val)
-            except (TypeError, ValueError):
-                return None
-
         rows.append({
             "stock_code":       code,
             "trade_date":       dt.date(),
