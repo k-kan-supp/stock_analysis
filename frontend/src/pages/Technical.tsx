@@ -33,6 +33,15 @@ const SIGMA_COLORS = {
   band98: '#27AE60',  // MA98 と同系色
 }
 
+// SPC 管理の色
+const SPC_COLORS = {
+  runUp:       '#00A854',  // 連続上昇 (緑)
+  runDown:     '#F5222D',  // 連続降下 (赤)
+  aboveTarget: '#FA8C16',  // Target 以上 (オレンジ)
+  belowTarget: '#1890FF',  // Target 以下 (青)
+  targetLine:  '#8C8C8C',  // Target ライン (グレー)
+}
+
 interface CrossEvent {
   trade_date: string
   type: 'golden' | 'dead'
@@ -143,6 +152,11 @@ export default function Technical() {
     addLine('sigma3_upper_98', SIGMA_COLORS.band98, 1, 1)
     addLine('sigma3_lower_98', SIGMA_COLORS.band98, 1, 1)
 
+    // SPC ターゲットライン (前日終値 × 1.005, 点線: lineStyle=2)
+    if (technicals.some(t => t.target_price != null)) {
+      addLine('target_price', SPC_COLORS.targetLine, 1, 2)
+    }
+
     // ── マーカー: クロス + 外れ値 ────────────────────────
     const crosses = detectCrosses(technicals)
 
@@ -181,8 +195,54 @@ export default function Technical() {
       })
     })
 
+    // SPC フラグマーカー
+    const spcMarkers: SeriesMarker<Time>[] = []
+    technicals.forEach(t => {
+      if (!t.spc_flag) return
+      // 上方マーカー: 連続上昇 > Target 以上 の優先順
+      if (t.spc_flag_run_up === true) {
+        spcMarkers.push({
+          time: t.trade_date as Time,
+          position: 'aboveBar',
+          color: SPC_COLORS.runUp,
+          shape: 'arrowUp',
+          text: `↑${t.consecutive_rise}d`,
+          size: 1,
+        })
+      } else if (t.spc_flag_above_target === true) {
+        spcMarkers.push({
+          time: t.trade_date as Time,
+          position: 'aboveBar',
+          color: SPC_COLORS.aboveTarget,
+          shape: 'circle',
+          text: `T+${t.consecutive_above_target}d`,
+          size: 1,
+        })
+      }
+      // 下方マーカー: 連続降下 > Target 以下 の優先順
+      if (t.spc_flag_run_down === true) {
+        spcMarkers.push({
+          time: t.trade_date as Time,
+          position: 'belowBar',
+          color: SPC_COLORS.runDown,
+          shape: 'arrowDown',
+          text: `↓${t.consecutive_decline}d`,
+          size: 1,
+        })
+      } else if (t.spc_flag_below_target === true) {
+        spcMarkers.push({
+          time: t.trade_date as Time,
+          position: 'belowBar',
+          color: SPC_COLORS.belowTarget,
+          shape: 'circle',
+          text: `T-${t.consecutive_below_target}d`,
+          size: 1,
+        })
+      }
+    })
+
     // マーカーをまとめて時系列順にセット
-    const allMarkers = [...crossMarkers, ...outlierMarkers]
+    const allMarkers = [...crossMarkers, ...outlierMarkers, ...spcMarkers]
       .sort((a, b) => ((a.time as string) < (b.time as string) ? -1 : 1))
     candleSeries.setMarkers(allMarkers)
 
@@ -239,6 +299,7 @@ export default function Technical() {
 
   const isOutlier49 = latestTech?.is_outlier_49 === true
   const isOutlier98 = latestTech?.is_outlier_98 === true
+  const hasSpcFlag  = latestTech?.spc_flag === true
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -289,6 +350,24 @@ export default function Technical() {
               ? `98日バンド: ${latestTech?.sigma3_lower_98?.toFixed(0)} 〜 ${latestTech?.sigma3_upper_98?.toFixed(0)}`
               : `49日バンド: ${latestTech?.sigma3_lower_49?.toFixed(0)} 〜 ${latestTech?.sigma3_upper_49?.toFixed(0)}`
           }
+        />
+      )}
+
+      {/* SPC アラートバナー */}
+      {hasSpcFlag && latestTech && (
+        <Alert
+          type="error"
+          showIcon
+          message={
+            <Space>
+              <Text strong>SPC ルール違反を検出</Text>
+              {latestTech.spc_flag_run_up    === true && <Tag color="green">連続上昇 {latestTech.consecutive_rise}日</Tag>}
+              {latestTech.spc_flag_run_down  === true && <Tag color="red">連続降下 {latestTech.consecutive_decline}日</Tag>}
+              {latestTech.spc_flag_above_target === true && <Tag color="orange">Target以上 {latestTech.consecutive_above_target}日</Tag>}
+              {latestTech.spc_flag_below_target === true && <Tag color="blue">Target以下 {latestTech.consecutive_below_target}日</Tag>}
+            </Space>
+          }
+          description={`Target価格 (前日終値×1.005): ¥${latestTech.target_price?.toFixed(0) ?? '-'} / 日次騰落率: ${latestTech.daily_return != null ? (latestTech.daily_return * 100).toFixed(2) + '%' : '-'}`}
         />
       )}
 
@@ -381,6 +460,65 @@ export default function Technical() {
         </>
       )}
 
+      {/* SPC 連続カウント */}
+      {latestTech && (
+        <Row gutter={12}>
+          {([
+            {
+              label: '連続上昇', color: SPC_COLORS.runUp,
+              value: latestTech.consecutive_rise != null ? `${latestTech.consecutive_rise}日` : '-',
+              flag: latestTech.spc_flag_run_up === true,
+            },
+            {
+              label: '連続降下', color: SPC_COLORS.runDown,
+              value: latestTech.consecutive_decline != null ? `${latestTech.consecutive_decline}日` : '-',
+              flag: latestTech.spc_flag_run_down === true,
+            },
+            {
+              label: 'Target以上', color: SPC_COLORS.aboveTarget,
+              value: latestTech.consecutive_above_target != null ? `${latestTech.consecutive_above_target}日` : '-',
+              flag: latestTech.spc_flag_above_target === true,
+            },
+            {
+              label: 'Target以下', color: SPC_COLORS.belowTarget,
+              value: latestTech.consecutive_below_target != null ? `${latestTech.consecutive_below_target}日` : '-',
+              flag: latestTech.spc_flag_below_target === true,
+            },
+            {
+              label: 'Target価格', color: SPC_COLORS.targetLine,
+              value: latestTech.target_price != null ? `¥${latestTech.target_price.toFixed(0)}` : '-',
+              flag: false,
+            },
+            {
+              label: '日次騰落率', color: (latestTech.daily_return ?? 0) >= 0.005 ? SPC_COLORS.aboveTarget : SPC_COLORS.belowTarget,
+              value: latestTech.daily_return != null ? `${(latestTech.daily_return * 100).toFixed(2)}%` : '-',
+              flag: false,
+            },
+          ] as { label: string; color: string; value: string; flag: boolean }[]).map(item => (
+            <Col span={4} key={item.label}>
+              <Card
+                size="small"
+                style={{
+                  borderTop: `3px solid ${item.color}`,
+                  background: item.flag ? '#fff1f0' : undefined,
+                }}
+              >
+                <Statistic
+                  title={
+                    <Space size={4}>
+                      <Text style={{ color: item.color, fontSize: 11 }}>{item.label}</Text>
+                      {item.flag && <WarningOutlined style={{ color: '#ff4d4f' }} />}
+                    </Space>
+                  }
+                  value={item.value}
+                  valueStyle={item.flag ? { color: '#ff4d4f', fontWeight: 700 } : undefined}
+                />
+              </Card>
+            </Col>
+          ))}
+        </Row>
+      )}
+
       {/* 直近クロス履歴 */}
       {recentCrosses.length > 0 && (
         <Card
@@ -451,6 +589,18 @@ export default function Technical() {
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
               <WarningOutlined style={{ color: '#FF4136' }} />
               <Text style={{ fontSize: 12, color: '#FF4136' }}>3σ 外れ値</Text>
+            </span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+              <span style={{ display: 'inline-block', width: 14, height: 2, background: SPC_COLORS.targetLine, borderTop: `2px dashed ${SPC_COLORS.targetLine}` }} />
+              <Text style={{ fontSize: 12, color: SPC_COLORS.targetLine }}>SPC Target(+0.5%)</Text>
+            </span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+              <ArrowUpOutlined style={{ color: SPC_COLORS.runUp }} />
+              <Text style={{ fontSize: 12, color: SPC_COLORS.runUp }}>連続上昇≥7</Text>
+            </span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+              <ArrowDownOutlined style={{ color: SPC_COLORS.runDown }} />
+              <Text style={{ fontSize: 12, color: SPC_COLORS.runDown }}>連続降下≥7</Text>
             </span>
           </Space>
 

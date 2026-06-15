@@ -5,7 +5,8 @@
   1. ゴールデン/デッドクロス  (MA7×MA49, MA49×MA98)
   2. 価格アラート             (alert_configs テーブルで設定)
   3. RSI 過熱/売られすぎ      (デフォルト 70超 / 30割れ)
-  4. 毎朝サマリーレポート      (ウォッチリスト銘柄の状況一覧)
+  4. SPC 管理アラート         (7日以上の連続上昇/降下/Target超え/未達)
+  5. 毎朝サマリーレポート      (ウォッチリスト銘柄の状況一覧)
 
 必要パッケージ:
   pip install sqlalchemy psycopg2-binary python-dotenv
@@ -26,6 +27,7 @@
   python notify.py --mode cross      # クロス検出のみ
   python notify.py --mode price      # 価格アラートのみ
   python notify.py --mode rsi        # RSI アラートのみ
+  python notify.py --mode spc        # SPC アラートのみ
   python notify.py --mode report     # 朝次サマリーレポートのみ
   python notify.py --dry-run         # メール送信せずログ出力だけ確認
 """
@@ -381,7 +383,124 @@ def check_rsi_alerts(dry_run: bool = False) -> list[dict]:
 
 
 # ══════════════════════════════════════════════════════════════
-# 4. 毎朝サマリーレポート
+# 4. SPC 管理アラート
+# ══════════════════════════════════════════════════════════════
+
+_SPC_RULE_CHECKS = [
+    ("spc_flag_run_up",       "spc_run_up",       "連続上昇",   "consecutive_rise"),
+    ("spc_flag_run_down",     "spc_run_down",      "連続降下",   "consecutive_decline"),
+    ("spc_flag_above_target", "spc_above_target",  "Target超え", "consecutive_above_target"),
+    ("spc_flag_below_target", "spc_below_target",  "Target未達", "consecutive_below_target"),
+]
+
+_SPC_COLORS = {
+    "連続上昇":   "#00A854",
+    "連続降下":   "#F5222D",
+    "Target超え": "#FA8C16",
+    "Target未達": "#1890FF",
+}
+
+
+def check_spc_alerts(dry_run: bool = False) -> list[dict]:
+    """SPC ルール違反 (7日以上の連続) を検出して通知する。
+    Target = 前日終値 × 1.005 (前日比 +0.5%)。
+    """
+    codes_filter = "AND s.stock_code = ANY(:codes)" if WATCHLIST else ""
+    sql = text(f"""
+        SELECT DISTINCT ON (std.stock_code)
+            std.stock_code, s.company_name_ja,
+            std.trade_date, std.daily_return,
+            std.spc_flag_run_up, std.spc_flag_run_down,
+            std.spc_flag_above_target, std.spc_flag_below_target,
+            std.consecutive_rise, std.consecutive_decline,
+            std.consecutive_above_target, std.consecutive_below_target,
+            s.price_latest
+        FROM stock_technical_daily std
+        JOIN stocks s ON s.stock_code = std.stock_code
+        WHERE std.spc_flag = TRUE
+          AND s.is_active = TRUE
+          {codes_filter}
+        ORDER BY std.stock_code, std.trade_date DESC
+    """)
+    params: dict = {}
+    if WATCHLIST:
+        params["codes"] = WATCHLIST
+
+    with engine.connect() as conn:
+        rows = conn.execute(sql, params).mappings().fetchall()
+
+    triggered: list[dict] = []
+    for r in rows:
+        for flag_col, alert_type, label, count_col in _SPC_RULE_CHECKS:
+            if not r[flag_col]:
+                continue
+            if _already_sent(r["stock_code"], alert_type, r["trade_date"]):
+                continue
+            triggered.append({
+                "code":         r["stock_code"],
+                "name":         r["company_name_ja"],
+                "date":         r["trade_date"],
+                "label":        label,
+                "alert_type":   alert_type,
+                "days":         r[count_col],
+                "price":        float(r["price_latest"]) if r["price_latest"] else None,
+                "daily_return": float(r["daily_return"]) if r["daily_return"] else None,
+            })
+
+    if not triggered:
+        log.info("SPC アラート: 新規アラートなし")
+        return []
+
+    def _badge(label: str) -> str:
+        color = _SPC_COLORS.get(label, "#333")
+        return f"<span style='color:{color};font-weight:bold'>{label}</span>"
+
+    rows_html = "".join(
+        f"<tr style='background:#{'fff9f0' if t['label'] in ('Target超え','連続上昇') else 'f0f4ff'}'>"
+        f"<td>{t['code']}</td><td>{t['name']}</td>"
+        f"<td>{_badge(t['label'])}</td>"
+        f"<td style='text-align:center'><b>{t['days']}日</b></td>"
+        f"<td style='text-align:right'>¥{t['price']:,.0f}</td>"
+        f"<td style='text-align:right'>{(t['daily_return'] * 100):.2f}%</td>"
+        f"<td>{t['date']}</td></tr>"
+        for t in triggered
+        if t["price"] is not None and t["daily_return"] is not None
+    )
+
+    html = _wrap_html(
+        f"SPC アラート {len(triggered)} 件",
+        f"""
+        <h2>SPC 管理アラート ({TODAY})</h2>
+        <p>Target = 前日終値 × 1.005 (前日比 +0.5%) | Run Rule: 7日以上継続でフラグ</p>
+        <table border="1" cellpadding="6" cellspacing="0"
+               style="border-collapse:collapse;width:100%;font-size:13px">
+          <thead style="background:#f5f5f5">
+            <tr><th>コード</th><th>銘柄名</th><th>ルール</th><th>連続日数</th>
+                <th>現在値</th><th>日次騰落率</th><th>日付</th></tr>
+          </thead>
+          <tbody>{rows_html}</tbody>
+        </table>
+        <p style="font-size:11px;color:#999">
+          連続上昇/降下: 終値が前日より上/下が7日以上継続<br>
+          Target超え/未達: 日次騰落率 ≥/&lt; +0.5% が7日以上継続
+        </p>
+        """,
+    )
+
+    send_email(f"【SPC アラート】{TODAY} ({len(triggered)} 件)", html, dry_run)
+
+    if not dry_run:
+        for t in triggered:
+            _record_sent(
+                t["code"], t["alert_type"], t["date"],
+                f"{t['label']} {t['days']}日 ¥{t['price']:,.0f}",
+            )
+
+    return triggered
+
+
+# ══════════════════════════════════════════════════════════════
+# 5. 毎朝サマリーレポート
 # ══════════════════════════════════════════════════════════════
 
 def send_morning_report(dry_run: bool = False) -> None:
@@ -512,7 +631,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="株式アラート通知 (Outlook SMTP)")
     parser.add_argument(
         "--mode",
-        choices=["all", "cross", "price", "rsi", "report"],
+        choices=["all", "cross", "price", "rsi", "spc", "report"],
         default="all",
         help="実行するアラート種別 (デフォルト: all)",
     )
@@ -536,6 +655,10 @@ def main() -> None:
     if args.mode in ("all", "rsi"):
         found = check_rsi_alerts(dry_run=args.dry_run)
         log.info(f"RSI アラート: {len(found)} 件")
+
+    if args.mode in ("all", "spc"):
+        found = check_spc_alerts(dry_run=args.dry_run)
+        log.info(f"SPC アラート: {len(found)} 件")
 
     if args.mode in ("all", "report"):
         send_morning_report(dry_run=args.dry_run)

@@ -103,6 +103,19 @@ class TechnicalDaily(BaseModel):
     sigma3_upper_98: Optional[Decimal]
     sigma3_lower_98: Optional[Decimal]
     is_outlier_98: Optional[bool]
+    # SPC 管理 (連続上昇/降下・Target 判定)
+    daily_return: Optional[Decimal]
+    target_price: Optional[Decimal]
+    is_above_target: Optional[bool]
+    consecutive_rise: Optional[int]
+    consecutive_decline: Optional[int]
+    consecutive_above_target: Optional[int]
+    consecutive_below_target: Optional[int]
+    spc_flag_run_up: Optional[bool]
+    spc_flag_run_down: Optional[bool]
+    spc_flag_above_target: Optional[bool]
+    spc_flag_below_target: Optional[bool]
+    spc_flag: Optional[bool]
 
     model_config = {"from_attributes": True}
 

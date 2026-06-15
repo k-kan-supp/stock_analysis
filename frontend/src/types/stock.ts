@@ -85,6 +85,19 @@ export interface TechnicalDaily {
   sigma3_upper_98: number | null
   sigma3_lower_98: number | null
   is_outlier_98: boolean | null
+  // SPC 管理 (連続上昇/降下・Target 判定)
+  daily_return: number | null
+  target_price: number | null
+  is_above_target: boolean | null
+  consecutive_rise: number | null
+  consecutive_decline: number | null
+  consecutive_above_target: number | null
+  consecutive_below_target: number | null
+  spc_flag_run_up: boolean | null
+  spc_flag_run_down: boolean | null
+  spc_flag_above_target: boolean | null
+  spc_flag_below_target: boolean | null
+  spc_flag: boolean | null
 }
 
 export interface ScreeningParams {

@@ -64,6 +64,19 @@ def _flatten_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _consec(cond: pd.Series) -> pd.Series:
+    """連続 True 日数をカウント (False/NaN でリセット)。"""
+    result: list[int] = []
+    count = 0
+    for val in cond:
+        try:
+            count = count + 1 if bool(val) else 0
+        except (TypeError, ValueError):
+            count = 0
+        result.append(count)
+    return pd.Series(result, index=cond.index, dtype="Int64")
+
+
 def _count_consecutive_div_years(dividends: pd.Series) -> Optional[int]:
     """配当履歴から直近の連続配当年数を計算する"""
     if dividends.empty:
@@ -432,6 +445,31 @@ def fetch_and_store_technicals(code: str, days: int = 365) -> None:
     hist["OUT_49"] = (hist["Close"] > hist["S3U_49"]) | (hist["Close"] < hist["S3L_49"])
     hist["OUT_98"] = (hist["Close"] > hist["S3U_98"]) | (hist["Close"] < hist["S3L_98"])
 
+    # ── SPC 管理 (連続上昇/降下・Target 判定) ────────────────────
+    # Target = 前日終値 × 1.005 (前日比 +0.5%)
+    hist["PREV_CLOSE"]    = hist["Close"].shift(1)
+    hist["DAILY_RET"]     = (hist["Close"] - hist["PREV_CLOSE"]) / hist["PREV_CLOSE"]
+    hist["SPC_TARGET"]    = hist["PREV_CLOSE"] * 1.005
+    hist["ABOVE_TARGET"]  = hist["Close"] > hist["SPC_TARGET"]
+    hist["BELOW_TARGET"]  = (hist["Close"] <= hist["SPC_TARGET"]) & hist["PREV_CLOSE"].notna()
+    hist["PRICE_UP"]      = hist["Close"] > hist["PREV_CLOSE"]
+    hist["PRICE_DOWN"]    = hist["Close"] < hist["PREV_CLOSE"]
+
+    hist["CONSEC_RISE"]    = _consec(hist["PRICE_UP"])
+    hist["CONSEC_DECLINE"] = _consec(hist["PRICE_DOWN"])
+    hist["CONSEC_ABOVE"]   = _consec(hist["ABOVE_TARGET"])
+    hist["CONSEC_BELOW"]   = _consec(hist["BELOW_TARGET"])
+
+    SPC_THRESHOLD = 7
+    hist["SPC_RUN_UP"]   = hist["CONSEC_RISE"]    >= SPC_THRESHOLD
+    hist["SPC_RUN_DOWN"] = hist["CONSEC_DECLINE"] >= SPC_THRESHOLD
+    hist["SPC_ABV_TGT"]  = hist["CONSEC_ABOVE"]   >= SPC_THRESHOLD
+    hist["SPC_BLW_TGT"]  = hist["CONSEC_BELOW"]   >= SPC_THRESHOLD
+    hist["SPC_FLAG"]     = (
+        hist["SPC_RUN_UP"] | hist["SPC_RUN_DOWN"] |
+        hist["SPC_ABV_TGT"] | hist["SPC_BLW_TGT"]
+    )
+
     hist = hist.tail(days)
 
     rows = []
@@ -482,6 +520,19 @@ def fetch_and_store_technicals(code: str, days: int = 365) -> None:
             "sigma3_upper_98":  safe_float(row.get("S3U_98"),         digits=2),
             "sigma3_lower_98":  safe_float(row.get("S3L_98"),         digits=2),
             "is_outlier_98":    safe_bool(row.get("OUT_98")),
+            # SPC 管理
+            "daily_return":               safe_float(row.get("DAILY_RET"),    digits=6),
+            "target_price":               safe_float(row.get("SPC_TARGET"),   digits=2),
+            "is_above_target":            safe_bool(row.get("ABOVE_TARGET")),
+            "consecutive_rise":           int(row["CONSEC_RISE"])    if pd.notna(row.get("CONSEC_RISE"))    else None,
+            "consecutive_decline":        int(row["CONSEC_DECLINE"]) if pd.notna(row.get("CONSEC_DECLINE")) else None,
+            "consecutive_above_target":   int(row["CONSEC_ABOVE"])   if pd.notna(row.get("CONSEC_ABOVE"))   else None,
+            "consecutive_below_target":   int(row["CONSEC_BELOW"])   if pd.notna(row.get("CONSEC_BELOW"))   else None,
+            "spc_flag_run_up":            safe_bool(row.get("SPC_RUN_UP")),
+            "spc_flag_run_down":          safe_bool(row.get("SPC_RUN_DOWN")),
+            "spc_flag_above_target":      safe_bool(row.get("SPC_ABV_TGT")),
+            "spc_flag_below_target":      safe_bool(row.get("SPC_BLW_TGT")),
+            "spc_flag":                   safe_bool(row.get("SPC_FLAG")),
         })
 
     if not rows:
@@ -495,7 +546,12 @@ def fetch_and_store_technicals(code: str, days: int = 365) -> None:
              bb_upper, bb_mid, bb_lower, bb_width,
              stoch_k, stoch_d, atr_14, obv, vwap,
              std_49, sigma3_upper_49, sigma3_lower_49, is_outlier_49,
-             std_98, sigma3_upper_98, sigma3_lower_98, is_outlier_98)
+             std_98, sigma3_upper_98, sigma3_lower_98, is_outlier_98,
+             daily_return, target_price, is_above_target,
+             consecutive_rise, consecutive_decline,
+             consecutive_above_target, consecutive_below_target,
+             spc_flag_run_up, spc_flag_run_down,
+             spc_flag_above_target, spc_flag_below_target, spc_flag)
         VALUES
             (:stock_code, :trade_date,
              :ma5, :ma7, :ma25, :ma49, :ma75, :ma98, :ma200, :ema12, :ema26,
@@ -503,7 +559,12 @@ def fetch_and_store_technicals(code: str, days: int = 365) -> None:
              :bb_upper, :bb_mid, :bb_lower, :bb_width,
              :stoch_k, :stoch_d, :atr_14, :obv, :vwap,
              :std_49, :sigma3_upper_49, :sigma3_lower_49, :is_outlier_49,
-             :std_98, :sigma3_upper_98, :sigma3_lower_98, :is_outlier_98)
+             :std_98, :sigma3_upper_98, :sigma3_lower_98, :is_outlier_98,
+             :daily_return, :target_price, :is_above_target,
+             :consecutive_rise, :consecutive_decline,
+             :consecutive_above_target, :consecutive_below_target,
+             :spc_flag_run_up, :spc_flag_run_down,
+             :spc_flag_above_target, :spc_flag_below_target, :spc_flag)
         ON CONFLICT (stock_code, trade_date) DO UPDATE SET
             ma5=EXCLUDED.ma5, ma7=EXCLUDED.ma7,
             ma25=EXCLUDED.ma25, ma49=EXCLUDED.ma49,
@@ -522,7 +583,19 @@ def fetch_and_store_technicals(code: str, days: int = 365) -> None:
             std_98=EXCLUDED.std_98,
             sigma3_upper_98=EXCLUDED.sigma3_upper_98,
             sigma3_lower_98=EXCLUDED.sigma3_lower_98,
-            is_outlier_98=EXCLUDED.is_outlier_98
+            is_outlier_98=EXCLUDED.is_outlier_98,
+            daily_return=EXCLUDED.daily_return,
+            target_price=EXCLUDED.target_price,
+            is_above_target=EXCLUDED.is_above_target,
+            consecutive_rise=EXCLUDED.consecutive_rise,
+            consecutive_decline=EXCLUDED.consecutive_decline,
+            consecutive_above_target=EXCLUDED.consecutive_above_target,
+            consecutive_below_target=EXCLUDED.consecutive_below_target,
+            spc_flag_run_up=EXCLUDED.spc_flag_run_up,
+            spc_flag_run_down=EXCLUDED.spc_flag_run_down,
+            spc_flag_above_target=EXCLUDED.spc_flag_above_target,
+            spc_flag_below_target=EXCLUDED.spc_flag_below_target,
+            spc_flag=EXCLUDED.spc_flag
     """)
     with engine.begin() as conn:
         conn.execute(sql, rows)
