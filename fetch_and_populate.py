@@ -13,15 +13,18 @@ yfinance + pandas-ta を使って各テーブルを一括更新する
   SPC_THRESHOLD           7                   (SPC Run Rule 連続日数閾値, 省略可)
   SPC_TARGET_RATIO        1.005               (SPC Target = 前日終値×比率, 省略可)
 実行例:
-  python fetch_and_populate.py
-  python fetch_and_populate.py --codes 7203 9984
+  python fetch_and_populate.py                     # DEFAULT_CODES の10銘柄
+  python fetch_and_populate.py --codes 7203 9984   # 指定銘柄のみ
+  python fetch_and_populate.py --all               # JPX 上場全銘柄（株式・ETF・REIT）
 """
 
+import io
 import math
 import os
 import time
 import logging
 import argparse
+import urllib.request
 from datetime import date
 from typing import Optional
 
@@ -55,6 +58,63 @@ SPC_THRESHOLD        = int(os.getenv("SPC_THRESHOLD",              "7"))
 SPC_TARGET_RATIO     = float(os.getenv("SPC_TARGET_RATIO",         "1.005"))
 
 _topix_returns: Optional[pd.Series] = None  # TOPIX 日次リターンのキャッシュ
+
+# ── JPX 上場銘柄一覧 ──────────────────────────────────────────
+JPX_LISTED_URL = (
+    "https://www.jpx.co.jp/markets/statistics-equities/misc/"
+    "tvdivq0000001vg2-att/data_j.xls"
+)
+
+MARKET_SECTION_MAP: dict[str, Optional[str]] = {
+    "プライム（内国株式）":    "Prime",
+    "スタンダード（内国株式）": "Standard",
+    "グロース（内国株式）":    "Growth",
+    "プライム（外国株式）":    "Prime",
+    "スタンダード（外国株式）": "Standard",
+    "グロース（外国株式）":    "Growth",
+    "PRO Market":            "TOKYO_PRO",
+}
+
+
+def fetch_jpx_listed_codes() -> list[dict]:
+    """
+    JPX 上場銘柄一覧 Excel をダウンロードし、全銘柄の
+    {code, company_name_ja, market_section, is_etf, is_reit, is_foreign_stock} を返す。
+    列レイアウト: 日付 | コード | 銘柄名 | 市場・商品区分 | 33業種コード | ...
+    """
+    log.info("JPX 上場銘柄一覧を取得中 ...")
+    req = urllib.request.Request(
+        JPX_LISTED_URL, headers={"User-Agent": "Mozilla/5.0"}
+    )
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        raw = resp.read()
+
+    df = pd.read_excel(io.BytesIO(raw), engine="xlrd", dtype=str)
+    results: list[dict] = []
+    for _, row in df.iterrows():
+        raw_code = str(row["コード"]).strip()
+        if not raw_code.isdigit():
+            continue
+        code      = raw_code.zfill(4)
+        name_ja   = str(row["銘柄名"]).strip()
+        market_ja = str(row["市場・商品区分"]).strip()
+
+        market_section  = MARKET_SECTION_MAP.get(market_ja)
+        is_etf          = "ETF" in market_ja or "ETN" in market_ja
+        is_reit         = "REIT" in market_ja or "リート" in market_ja
+        is_foreign_stock = "外国株式" in market_ja
+
+        results.append({
+            "code":             code,
+            "company_name_ja":  name_ja,
+            "market_section":   market_section,
+            "is_etf":           is_etf,
+            "is_reit":          is_reit,
+            "is_foreign_stock": is_foreign_stock,
+        })
+
+    log.info(f"JPX 上場銘柄一覧: {len(results)} 件取得")
+    return results
 
 
 def to_ticker(code: str) -> str:
@@ -626,12 +686,31 @@ def fetch_and_store_technicals(code: str, days: int = 365) -> None:
 # 4. メイン処理
 # ──────────────────────────────────────────────────────────
 
-def run_all(codes: list[str]) -> None:
+def run_all(codes: list[str], jpx_meta: Optional[dict[str, dict]] = None) -> None:
     success, failed = 0, []
     for i, code in enumerate(codes, 1):
         log.info(f"[{i}/{len(codes)}] Processing {code} ...")
         try:
             attrs = fetch_stock_attributes(code)
+
+            # JPX メタデータで補完（yfinance で取れない市場区分・ETF/REITフラグ）
+            if jpx_meta and code in jpx_meta:
+                meta = jpx_meta[code]
+                if meta.get("market_section"):
+                    attrs["market_section"] = meta["market_section"]
+                if meta.get("is_etf"):
+                    attrs["is_etf"] = True
+                if meta.get("is_reit"):
+                    attrs["is_reit"] = True
+                if meta.get("is_foreign_stock"):
+                    attrs["is_foreign_stock"] = True
+                # yfinance が英語名しか返さない場合は JPX の日本語名で補完
+                if (
+                    meta.get("company_name_ja")
+                    and attrs.get("company_name_ja") == attrs.get("company_name_en")
+                ):
+                    attrs["company_name_ja"] = meta["company_name_ja"]
+
             populated = sum(1 for v in attrs.values() if v is not None)
             upsert_stock(attrs)
             log.info(f"{code}: stocks 属性 {populated}/{len(attrs)} 件 populate")
@@ -660,6 +739,21 @@ if __name__ == "__main__":
         "--codes", nargs="*",
         help="対象銘柄コード (省略時はDEFAULT_CODESを使用)",
     )
+    parser.add_argument(
+        "--all", action="store_true",
+        help="JPX 上場全銘柄（株式・ETF・REIT）を対象にする",
+    )
     args = parser.parse_args()
-    target_codes = args.codes if args.codes else DEFAULT_CODES
-    run_all(target_codes)
+
+    jpx_meta: Optional[dict[str, dict]] = None
+    if args.all:
+        jpx_list = fetch_jpx_listed_codes()
+        jpx_meta = {item["code"]: item for item in jpx_list}
+        target_codes = list(jpx_meta.keys())
+        log.info(f"--all モード: JPX 上場 {len(target_codes)} 銘柄を処理します")
+    elif args.codes:
+        target_codes = args.codes
+    else:
+        target_codes = DEFAULT_CODES
+
+    run_all(target_codes, jpx_meta=jpx_meta)

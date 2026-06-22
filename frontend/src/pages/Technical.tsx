@@ -11,6 +11,9 @@ import {
 import { stocksApi } from '../api/client'
 import type { TechnicalDaily } from '../types/stock'
 
+const fmt = (v: number | string | null | undefined, digits = 0) =>
+  v == null ? '-' : Number(v).toFixed(digits)
+
 const { Text } = Typography
 
 const PERIOD_OPTIONS = [
@@ -105,9 +108,12 @@ export default function Technical() {
     if (!candleRef.current || !rsiRef.current || !macdRef.current) return
     if (!prices?.length || !technicals?.length) return
 
-    candleChartRef.current?.remove()
-    rsiChartRef.current?.remove()
-    macdChartRef.current?.remove()
+    try { candleChartRef.current?.remove() } catch { /* disposed */ }
+    try { rsiChartRef.current?.remove()    } catch { /* disposed */ }
+    try { macdChartRef.current?.remove()   } catch { /* disposed */ }
+    candleChartRef.current = null
+    rsiChartRef.current    = null
+    macdChartRef.current   = null
 
     const chartOpts = {
       layout: { background: { color: '#fff' }, textColor: '#333' },
@@ -286,6 +292,9 @@ export default function Technical() {
     macdChartRef.current = macdChart
 
     return () => {
+      candleChartRef.current = null
+      rsiChartRef.current    = null
+      macdChartRef.current   = null
       candleChart.remove()
       rsiChart.remove()
       macdChart.remove()
@@ -338,17 +347,17 @@ export default function Technical() {
             <Space>
               <Text strong>3σ 外れ値を検出</Text>
               {isOutlier98 && (
-                <Tag color="red">98日 3σ 突破 (σ={latestTech?.std_98?.toFixed(0)})</Tag>
+                <Tag color="red">98日 3σ 突破 (σ={fmt(latestTech?.std_98)})</Tag>
               )}
               {isOutlier49 && !isOutlier98 && (
-                <Tag color="orange">49日 3σ 突破 (σ={latestTech?.std_49?.toFixed(0)})</Tag>
+                <Tag color="orange">49日 3σ 突破 (σ={fmt(latestTech?.std_49)})</Tag>
               )}
             </Space>
           }
           description={
             isOutlier98
-              ? `98日バンド: ${latestTech?.sigma3_lower_98?.toFixed(0)} 〜 ${latestTech?.sigma3_upper_98?.toFixed(0)}`
-              : `49日バンド: ${latestTech?.sigma3_lower_49?.toFixed(0)} 〜 ${latestTech?.sigma3_upper_49?.toFixed(0)}`
+              ? `98日バンド: ${fmt(latestTech?.sigma3_lower_98)} 〜 ${fmt(latestTech?.sigma3_upper_98)}`
+              : `49日バンド: ${fmt(latestTech?.sigma3_lower_49)} 〜 ${fmt(latestTech?.sigma3_upper_49)}`
           }
         />
       )}
@@ -367,7 +376,7 @@ export default function Technical() {
               {latestTech.spc_flag_below_target === true && <Tag color="blue">Target以下 {latestTech.consecutive_below_target}日</Tag>}
             </Space>
           }
-          description={`Target価格 (前日終値×1.005): ¥${latestTech.target_price?.toFixed(0) ?? '-'} / 日次騰落率: ${latestTech.daily_return != null ? (latestTech.daily_return * 100).toFixed(2) + '%' : '-'}`}
+          description={`Target価格 (前日終値×1.005): ¥${fmt(latestTech.target_price)} / 日次騰落率: ${latestTech.daily_return != null ? (Number(latestTech.daily_return) * 100).toFixed(2) + '%' : '-'}`}
         />
       )}
 
@@ -389,10 +398,7 @@ export default function Technical() {
                 <Card size="small" style={{ borderTop: `3px solid ${color}` }}>
                   <Statistic
                     title={<Text style={{ color, fontSize: 12 }}>{label}</Text>}
-                    value={
-                      (latestTech[key] as number | null)
-                        ?.toFixed(key === 'rsi_14' || key === 'macd' ? 2 : 0) ?? '-'
-                    }
+                    value={fmt(latestTech[key] as number | string | null, key === 'rsi_14' || key === 'macd' ? 2 : 0)}
                   />
                 </Card>
               </Col>
@@ -403,35 +409,35 @@ export default function Technical() {
           <Row gutter={12}>
             {[
               {
-                label: '49日 +3σ', value: latestTech.sigma3_upper_49?.toFixed(0) ?? '-',
+                label: '49日 +3σ', value: fmt(latestTech.sigma3_upper_49),
                 color: SIGMA_COLORS.band49, outlier: isOutlier49,
               },
               {
-                label: '49日 MA', value: latestTech.ma49?.toFixed(0) ?? '-',
+                label: '49日 MA', value: fmt(latestTech.ma49),
                 color: SIGMA_COLORS.band49, outlier: false,
               },
               {
-                label: '49日 -3σ', value: latestTech.sigma3_lower_49?.toFixed(0) ?? '-',
+                label: '49日 -3σ', value: fmt(latestTech.sigma3_lower_49),
                 color: SIGMA_COLORS.band49, outlier: isOutlier49,
               },
               {
-                label: '49日 σ', value: latestTech.std_49?.toFixed(1) ?? '-',
+                label: '49日 σ', value: fmt(latestTech.std_49, 1),
                 color: SIGMA_COLORS.band49, outlier: false,
               },
               {
-                label: '98日 +3σ', value: latestTech.sigma3_upper_98?.toFixed(0) ?? '-',
+                label: '98日 +3σ', value: fmt(latestTech.sigma3_upper_98),
                 color: SIGMA_COLORS.band98, outlier: isOutlier98,
               },
               {
-                label: '98日 MA', value: latestTech.ma98?.toFixed(0) ?? '-',
+                label: '98日 MA', value: fmt(latestTech.ma98),
                 color: SIGMA_COLORS.band98, outlier: false,
               },
               {
-                label: '98日 -3σ', value: latestTech.sigma3_lower_98?.toFixed(0) ?? '-',
+                label: '98日 -3σ', value: fmt(latestTech.sigma3_lower_98),
                 color: SIGMA_COLORS.band98, outlier: isOutlier98,
               },
               {
-                label: '98日 σ', value: latestTech.std_98?.toFixed(1) ?? '-',
+                label: '98日 σ', value: fmt(latestTech.std_98, 1),
                 color: SIGMA_COLORS.band98, outlier: false,
               },
             ].map(item => (
@@ -486,12 +492,12 @@ export default function Technical() {
             },
             {
               label: 'Target価格', color: SPC_COLORS.targetLine,
-              value: latestTech.target_price != null ? `¥${latestTech.target_price.toFixed(0)}` : '-',
+              value: latestTech.target_price != null ? `¥${fmt(latestTech.target_price)}` : '-',
               flag: false,
             },
             {
-              label: '日次騰落率', color: (latestTech.daily_return ?? 0) >= 0.005 ? SPC_COLORS.aboveTarget : SPC_COLORS.belowTarget,
-              value: latestTech.daily_return != null ? `${(latestTech.daily_return * 100).toFixed(2)}%` : '-',
+              label: '日次騰落率', color: (Number(latestTech.daily_return) ?? 0) >= 0.005 ? SPC_COLORS.aboveTarget : SPC_COLORS.belowTarget,
+              value: latestTech.daily_return != null ? `${(Number(latestTech.daily_return) * 100).toFixed(2)}%` : '-',
               flag: false,
             },
           ] as { label: string; color: string; value: string; flag: boolean }[]).map(item => (

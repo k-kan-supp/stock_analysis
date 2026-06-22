@@ -50,7 +50,7 @@ CREATE TABLE stocks (
     ir_contact_email    VARCHAR(120),
 
     -- ────────────── B. 市場・区分情報 (12属性) ──────────────
-    market_section      market_section NOT NULL,
+    market_section      market_section,
     is_topix            BOOLEAN       NOT NULL DEFAULT FALSE,
     topix_component     VARCHAR(20),                  -- TOPIX Core30 / Large70 / Mid400 / Small / Micro
     is_nikkei225        BOOLEAN       NOT NULL DEFAULT FALSE,
